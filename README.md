@@ -28,7 +28,9 @@ Works like singleflight, but caches the previously fetched data.
 		return result, nil
 	}
 
-	// Define the loader.
+	// Initialize a new dataloader.
+	// This should ideally be per-request scope, pretty much like how dataloader
+	// would work.
 	l := clash.NewLoader(userFinder)
 	defer l.Close()
 
