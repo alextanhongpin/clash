@@ -139,39 +139,18 @@ func (l *Loader) Load(ctx context.Context, key Key) (interface{}, error) {
 	result, exists := l.cache[key]
 	l.mu.RUnlock()
 
-	condition := func() bool {
-		l.mu.RLock()
-		result := l.cache[key]
-		l.mu.RUnlock()
-
-		return result.status == Pending
-	}
-
 	if exists {
 		if result.status == Success || result.status == Failed {
 			return result.Value, result.Error
 		}
-
-		l.cond.L.Lock()
-
-		for condition() {
-			l.cond.Wait()
-		}
-
-		l.mu.RLock()
-		result = l.cache[key]
-		l.mu.RUnlock()
-
-		l.cond.L.Unlock()
-		return result.Value, result.Error
+	} else {
+		l.mu.Lock()
+		l.cache[key] = Result{status: Pending}
+		l.mu.Unlock()
 	}
 
-	l.mu.Lock()
-	l.cache[key] = Result{status: Pending}
-	l.mu.Unlock()
-
 	l.cond.L.Lock()
-	for condition() {
+	for l.isPending(key) {
 		l.cond.Wait()
 	}
 
@@ -189,4 +168,12 @@ func (l *Loader) Close() {
 		l.wg.Wait()
 		close(l.done)
 	})
+}
+
+func (l *Loader) isPending(key Key) bool {
+	l.mu.RLock()
+	result := l.cache[key]
+	l.mu.RUnlock()
+
+	return result.status == Pending
 }
