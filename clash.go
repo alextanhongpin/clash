@@ -89,7 +89,7 @@ func (l *Loader) batch() {
 	}
 
 	ctx := context.Background()
-	items, err := l.batchFn(ctx, keys)
+	results, err := l.batchFn(ctx, keys)
 	if err != nil {
 		l.cond.L.Lock()
 		// On failure, all the result must be set to err.
@@ -108,23 +108,23 @@ func (l *Loader) batch() {
 		return
 	}
 
-	itemByID := make(map[Key]Result)
-	for _, item := range items {
-		itemByID[item.Key] = item
+	resultByKey := make(map[Key]Result)
+	for _, result := range results {
+		resultByKey[result.Key] = result
 	}
 
 	l.cond.L.Lock()
 	// Ensure that all requested keys have results.
 	// Otherwise sync.Cond will block indefinitely.
 	for _, key := range keys {
-		item, exists := itemByID[key]
+		result, exists := resultByKey[key]
 		if exists {
-			if item.Error != nil {
-				item.status = Failed
+			if result.Error != nil {
+				result.status = Failed
 			} else {
-				item.status = Success
+				result.status = Success
 			}
-			l.cache[key] = item
+			l.cache[key] = result
 		} else {
 			l.cache[key] = Result{
 				status: Failed,
