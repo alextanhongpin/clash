@@ -57,7 +57,3 @@ Works like singleflight, but caches the previously fetched data.
 		return nil, err
 	}
 ```
-
-## TODO
-- load many
-- set cache
