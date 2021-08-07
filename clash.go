@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Key represents the key to load.
@@ -131,7 +133,40 @@ func (l *Loader) batch() {
 	l.cond.L.Unlock()
 }
 
+func (l *Loader) Set(ctx context.Context, result Result) {
+	if result.Error != nil {
+		result.status = Failed
+	} else {
+		result.status = Success
+	}
+	l.mu.Lock()
+	l.cache[result.Key] = result
+	l.mu.Unlock()
+}
+
+func (l *Loader) LoadMany(ctx context.Context, keys []Key) ([]Result, error) {
+	result := make([]Result, len(keys))
+
+	g := new(errgroup.Group)
+	for i, key := range keys {
+		i, key := i, key
+		g.Go(func() error {
+			result[i] = l.load(ctx, key)
+			return result[i].Error
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (l *Loader) Load(ctx context.Context, key Key) (interface{}, error) {
+	result := l.load(ctx, key)
+	return result.Value, result.Error
+}
+
+func (l *Loader) load(ctx context.Context, key Key) Result {
 	l.wg.Add(1)
 	defer l.wg.Done()
 
@@ -141,7 +176,7 @@ func (l *Loader) Load(ctx context.Context, key Key) (interface{}, error) {
 
 	if exists {
 		if result.status == Success || result.status == Failed {
-			return result.Value, result.Error
+			return result
 		}
 	} else {
 		l.mu.Lock()
@@ -160,7 +195,7 @@ func (l *Loader) Load(ctx context.Context, key Key) (interface{}, error) {
 
 	l.cond.L.Unlock()
 
-	return result.Value, result.Error
+	return result
 }
 
 func (l *Loader) Close() {

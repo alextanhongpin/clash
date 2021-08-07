@@ -2,6 +2,7 @@ package clash_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -68,38 +69,174 @@ func TestClashFetchNone(t *testing.T) {
 	}
 }
 
+func TestClashFetchCached(t *testing.T) {
+	validator := func(batch int64, ids []string) {
+		switch batch {
+		case 1:
+			if len(ids) != 0 {
+				t.Fatalf("expected fetch to be 0, got %v", ids)
+			}
+		}
+	}
+
+	m := &mockRepository{
+		validator: validator,
+		cachedUser: &User{
+			ID:   "2",
+			Name: fmt.Sprintf("user-2"),
+		},
+	}
+	users, err := m.findUsers(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("expected error to be nil, got %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("expected to fetch 1 user, got %v", users)
+	}
+}
+
+func TestClashFetchBatchedNone(t *testing.T) {
+	validator := func(batch int64, ids []string) {
+		switch batch {
+		case 1:
+			if len(ids) != 0 {
+				t.Fatalf("expected fetch to be 0, got %v", ids)
+			}
+		}
+	}
+
+	m := &mockRepository{
+		validator: validator,
+	}
+	users, err := m.findBatchUsers(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("expected error to be nil, got %v", err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("expected to fetch 5 users, got %v", users)
+	}
+}
+
+func TestClashFetchBatchedUnique(t *testing.T) {
+	validator := func(batch int64, ids []string) {
+		switch batch {
+		case 1:
+			if len(ids) != 3 {
+				t.Fatalf("expected fetch to be 3, got %v", ids)
+			}
+		}
+	}
+
+	m := &mockRepository{
+		validator: validator,
+	}
+	users, err := m.findBatchUsers(context.Background(), 5)
+	if err != nil {
+		t.Fatalf("expected error to be nil, got %v", err)
+	}
+	if len(users) != 5 {
+		t.Fatalf("expected to fetch 5 users, got %v", users)
+	}
+}
+
+func TestClashFetchBatchedError(t *testing.T) {
+	validator := func(batch int64, ids []string) {
+		switch batch {
+		case 1:
+			if len(ids) != 0 {
+				t.Fatalf("expected fetch to be 0, got %v", ids)
+			}
+		}
+	}
+
+	m := &mockRepository{
+		validator: validator,
+	}
+	numUsers := 10
+	users, err := m.findBatchUsersError(context.Background(), numUsers)
+	if err == nil {
+		t.Fatalf("expected error not to be nil, got %v", err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("expected to fetch 0 users, got %v", users)
+	}
+}
+
 type User struct {
 	ID   string
 	Name string
 }
 
 type mockRepository struct {
-	validator func(batch int64, ids []string)
-	count     int64
+	validator  func(batch int64, ids []string)
+	count      int64
+	cachedUser *User
+}
+
+func (m *mockRepository) findBatchUsersError(ctx context.Context, n int) ([]User, error) {
+	l := clash.NewLoader(m.userFinderError)
+	defer l.Close()
+
+	users := make([]User, n)
+	keys := make([]clash.Key, n)
+	for i := 0; i < n; i++ {
+		keys[i] = clash.Key(fmt.Sprint(m))
+	}
+	result, err := l.LoadMany(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for i, res := range result {
+		if err := res.Error; err != nil {
+			return nil, err
+		}
+		users[i] = res.Value.(User)
+	}
+	return users, nil
+}
+
+func (m *mockRepository) findBatchUsers(ctx context.Context, n int) ([]User, error) {
+	l := clash.NewLoader(m.userFinder)
+	defer l.Close()
+
+	users := make([]User, n)
+	keys := make([]clash.Key, n)
+	for i := 0; i < n; i++ {
+
+		var m int
+		if i == 4 {
+			m = 1
+		} else if i%2 == 0 {
+			m = 2
+		} else {
+			m = 3
+		}
+		keys[i] = clash.Key(fmt.Sprint(m))
+	}
+	result, err := l.LoadMany(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	for i, res := range result {
+		if err := res.Error; err != nil {
+			return nil, err
+		}
+		users[i] = res.Value.(User)
+	}
+	return users, nil
 }
 
 func (m *mockRepository) findUsers(ctx context.Context, n int) ([]User, error) {
-	userFinder := func(ctx context.Context, keys []clash.Key) ([]clash.Result, error) {
-		ids := make([]string, len(keys))
-		for i, key := range keys {
-			ids[i] = key.String()
-		}
-		users, err := m.findUsersByIDs(ctx, ids)
-		if err != nil {
-			return nil, err
-		}
-		result := make([]clash.Result, len(keys))
-		for i, user := range users {
-			result[i] = clash.Result{
-				Value: user,
-				Key:   clash.Key(user.ID),
-				Error: nil,
-			}
-		}
-		return result, nil
-	}
-	l := clash.NewLoader(userFinder)
+	l := clash.NewLoader(m.userFinder)
 	defer l.Close()
+
+	if m.cachedUser != nil {
+		l.Set(ctx, clash.Result{
+			Key:   clash.Key(m.cachedUser.ID),
+			Value: *m.cachedUser,
+			Error: nil,
+		})
+	}
 
 	users := make([]User, n)
 
@@ -158,4 +295,28 @@ func (m *mockRepository) findUsersByIDs(ctx context.Context, ids []string) ([]Us
 		}
 	}
 	return users, nil
+}
+
+func (m *mockRepository) userFinder(ctx context.Context, keys []clash.Key) ([]clash.Result, error) {
+	ids := make([]string, len(keys))
+	for i, key := range keys {
+		ids[i] = key.String()
+	}
+	users, err := m.findUsersByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]clash.Result, len(keys))
+	for i, user := range users {
+		result[i] = clash.Result{
+			Value: user,
+			Key:   clash.Key(user.ID),
+			Error: nil,
+		}
+	}
+	return result, nil
+}
+
+func (m *mockRepository) userFinderError(ctx context.Context, keys []clash.Key) ([]clash.Result, error) {
+	return nil, errors.New("something bad happened")
 }
