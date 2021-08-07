@@ -92,6 +92,9 @@ func (l *Loader) batch() {
 	items, err := l.batchFn(ctx, keys)
 	if err != nil {
 		l.cond.L.Lock()
+		// On failure, all the result must be set to err.
+		// Otherwise it will block the whole operation since the sync.Cond
+		// condition will never be fulfilled if the key is not found.
 		for _, key := range keys {
 			l.cache[key] = Result{
 				Key:    key,
@@ -111,6 +114,8 @@ func (l *Loader) batch() {
 	}
 
 	l.cond.L.Lock()
+	// Ensure that all requested keys have results.
+	// Otherwise sync.Cond will block indefinitely.
 	for _, key := range keys {
 		item, exists := itemByID[key]
 		if exists {
@@ -129,6 +134,8 @@ func (l *Loader) batch() {
 			}
 		}
 	}
+	// Broadcast will notify all reader that the key have been populated.
+	// Those reader might not necessarily match the key though, but it is fine.
 	l.cond.Broadcast()
 	l.cond.L.Unlock()
 }
